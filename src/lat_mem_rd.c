@@ -1,7 +1,8 @@
 /*
  * lat_mem_rd.c - measure memory load latency
  *
- * usage: lat_mem_rd [-P <parallelism>] [-W <warmup>] [-N <repetitions>] [-t] size-in-MB [stride ...]
+ * usage: lat_mem_rd [-P <parallelism>] [-W <warmup>] [-N <repetitions>] [-t] [-R start:stop] [stride ...]
+ *        lat_mem_rd [-P <parallelism>] [-W <warmup>] [-N <repetitions>] [-t] size-in-MB [stride ...]
  *
  * Copyright (c) 1994 Larry McVoy.  
  * Copyright (c) 2003, 2004 Carl Staelin.
@@ -22,6 +23,10 @@ void	loads(size_t len, size_t range, size_t stride,
 size_t	step(size_t k);
 void	initialize(iter_t iterations, void* cookie);
 
+static int	parse_range(const char* spec, size_t* start, size_t* stop);
+static void	run_sweep(size_t len, size_t start, size_t stop, size_t stride,
+		  int parallel, int warmup, int repetitions);
+
 benchmp_f	fpInit = stride_initialize;
 
 int
@@ -29,18 +34,27 @@ main(int ac, char **av)
 {
 	int	i;
 	int	c;
+	int	range_set = 0;
 	int	parallel = 1;
 	int	warmup = 0;
 	int	repetitions = -1;
         size_t	len;
-	size_t	range;
+	size_t	start = LOWER;
+	size_t	stop = 0;
 	size_t	stride;
-	char   *usage = "[-P <parallelism>] [-W <warmup>] [-N <repetitions>] [-t] len [stride...]\n";
+	char   *usage = "[-P <parallelism>] [-W <warmup>] [-N <repetitions>] [-t] [-R <start:stop>] [stride...]\n"
+		      "or: [-P <parallelism>] [-W <warmup>] [-N <repetitions>] [-t] len [stride...]\n";
 
-	while (( c = getopt(ac, av, "tP:W:N:")) != EOF) {
+	while (( c = getopt(ac, av, "tP:W:N:R:")) != EOF) {
 		switch(c) {
 		case 't':
 			fpInit = thrash_initialize;
+			break;
+		case 'R':
+			if (parse_range(optarg, &start, &stop) < 0) {
+				lmbench_usage(ac, av, usage);
+			}
+			range_set = 1;
 			break;
 		case 'P':
 			parallel = atoi(optarg);
@@ -57,31 +71,77 @@ main(int ac, char **av)
 			break;
 		}
 	}
-	if (optind == ac) {
-		lmbench_usage(ac, av, usage);
+
+	if (range_set) {
+		if (start == 0 || stop == 0 || start > stop) {
+			lmbench_usage(ac, av, usage);
+		}
+		len = stop;
+	} else {
+		if (optind == ac) {
+			lmbench_usage(ac, av, usage);
+		}
+
+		len = atoi(av[optind]);
+		len *= 1024 * 1024;
+		stop = len;
+		++optind;
 	}
 
-        len = atoi(av[optind]);
-	len *= 1024 * 1024;
-
-	if (optind == ac - 1) {
+	if (optind == ac) {
 		fprintf(stderr, "\"stride=%d\n", (int)STRIDE);
-		for (range = LOWER; range <= len; range = step(range)) {
-			loads(len, range, STRIDE, parallel, 
-			      warmup, repetitions);
-		}
+		run_sweep(len, start, stop, STRIDE,
+			  parallel, warmup, repetitions);
 	} else {
-		for (i = optind + 1; i < ac; ++i) {
+		for (i = optind; i < ac; ++i) {
 			stride = bytes(av[i]);
 			fprintf(stderr, "\"stride=%d\n", (int)stride);
-			for (range = LOWER; range <= len; range = step(range)) {
-				loads(len, range, stride, parallel, 
-				      warmup, repetitions);
-			}
+			run_sweep(len, start, stop, stride,
+				  parallel, warmup, repetitions);
 			fprintf(stderr, "\n");
 		}
 	}
 	return(0);
+}
+
+static int
+parse_range(const char* spec, size_t* start, size_t* stop)
+{
+	char* tmp;
+	char* sep;
+
+	tmp = strdup(spec);
+	if (!tmp) {
+		return (-1);
+	}
+
+	sep = strchr(tmp, ':');
+	if (!sep || sep == tmp || !*(sep + 1)) {
+		free(tmp);
+		return (-1);
+	}
+
+	*sep = '\0';
+	*start = bytes(tmp);
+	*stop = bytes(sep + 1);
+	free(tmp);
+
+	return (0);
+}
+
+static void
+run_sweep(size_t len, size_t start, size_t stop, size_t stride,
+	  int parallel, int warmup, int repetitions)
+{
+	size_t range;
+
+	for (range = start; range <= stop;) {
+		loads(len, range, stride, parallel, warmup, repetitions);
+		if (range == stop) break;
+
+		range = step(range);
+		if (range > stop) range = stop;
+	}
 }
 
 #define	ONE	p = (char **)*p;
